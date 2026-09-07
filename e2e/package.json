@@ -1,0 +1,12 @@
+{
+  "name": "hindsight-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright end-to-end specs for Hindsight (chromium only).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

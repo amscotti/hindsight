@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt check
+        run: test -z "$(gofmt -l .)"
+      - name: codegen freshness
+        run: go generate ./... && git diff --exit-code -- '*_templ.go'
+      - name: go vet
+        run: go vet ./...
+      - name: tests
+        run: go test -race -count=1 ./...
+      - name: vendored asset hashes
+        run: |
+          if ls static/vendor/*.sha256 >/dev/null 2>&1; then
+            sha256sum -c static/vendor/*.sha256
+          else
+            echo "no vendored hash files yet; skipping"
+          fi
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.2
+          args: ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
+      - name: e2e
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sqlite3
+          cd e2e
+          npm ci
+          npx playwright install chromium
+          npx playwright test

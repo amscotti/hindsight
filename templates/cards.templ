@@ -1,0 +1,226 @@
+package templates
+
+// Card is the card fragment: the unit clients swap on card events. The
+// stable id lets granular updates morph this node in place without
+// touching siblings; the stream subscription beside it keeps the node
+// live, including its own removal (the delete payload arrives as an
+// out-of-band node). Alpine scopes must stay above this element, never
+// inside it: the vote control below is htmx-driven (idle, pending via
+// the request class and self-disable, confirmed by the swapped fragment,
+// denied by the shell's response-error handler rendering the flash), so
+// this fragment carries bindings only and no scopes of its own. The
+// drag bindings below call into the board shell scope, which owns the
+// drag state; the data attributes pin the slot seen at drag start.
+// Votes render as dot stickers (visual echo of the count in the meta
+// line); the tint comes from the column's sticky-pad color.
+templ Card(card CardView) {
+	<article
+		id={ "card-" + itoa64(card.ID) }
+		class={ cardClass(card) }
+		sse-swap={ "card-updated:" + itoa64(card.ID) + ", vote-changed:" + itoa64(card.ID) + ", card-removed:" + itoa64(card.ID) }
+		hx-swap="morph:outerHTML"
+		data-column={ itoa64(card.ColumnID) }
+		data-position={ itoa(card.Position) }
+		draggable="true"
+		@dragstart={ "dragStart($event, " + itoa64(card.ID) + ")" }
+		@dragend="dragEnd()"
+	>
+		<p class="card-body">{ card.Body }</p>
+		if card.Discussed {
+			<p><small class="discussed-badge">Discussed</small></p>
+		}
+		<footer class="card-foot">
+			<small>
+				if card.AuthorName != "" {
+					{ card.AuthorName }
+				} else {
+					Anonymous
+				}
+				{ " · " + cardVotesLabel(card.Votes) }
+				{ " · " }
+				<span class="card-id">#{ itoa64(card.ID) }</span>
+			</small>
+			if card.Votes > 0 {
+				<span class="dots" aria-hidden="true">
+					for i := 0; i < min(card.Votes, maxDots); i++ {
+						<i class="dot"></i>
+					}
+					if card.Votes > maxDots {
+						<i class="dot more"></i>
+					}
+				</span>
+			}
+			if card.Voted {
+				<button
+					type="button"
+					class="vote-button vote-cast"
+					hx-post={ "/cards/" + itoa64(card.ID) + "/unvote" }
+					hx-target={ "#card-" + itoa64(card.ID) }
+					hx-swap="morph:outerHTML"
+					hx-disabled-elt="this"
+				>Unvote</button>
+			} else {
+				<button
+					type="button"
+					class="vote-button"
+					hx-post={ "/cards/" + itoa64(card.ID) + "/vote" }
+					hx-target={ "#card-" + itoa64(card.ID) }
+					hx-swap="morph:outerHTML"
+					hx-disabled-elt="this"
+				>Vote</button>
+			}
+			if card.Grouped {
+				<form
+					hx-put={ "/cards/" + itoa64(card.ID) }
+					hx-target={ "#column-" + itoa64(card.ColumnID) }
+					hx-swap="morph:outerHTML"
+					method="POST"
+					action={ "/cards/" + itoa64(card.ID) }
+				>
+					<input type="hidden" name="group_id" value=""/>
+					<button type="submit">Ungroup</button>
+				</form>
+			}
+		</footer>
+		<div class="comments" id={ "comments-" + itoa64(card.ID) }>
+			if len(card.Comments) > 0 {
+				<p><small>{ commentCountLabel(len(card.Comments)) }</small></p>
+				for _, comment := range card.Comments {
+					<div class="comment">
+						<p class="comment-body">{ comment.Body }</p>
+						<small>
+							if comment.AuthorName != "" {
+								{ comment.AuthorName }
+							} else {
+								Anonymous
+							}
+						</small>
+					</div>
+				}
+			}
+			<form
+				class="comment-form inline-form"
+				hx-post={ "/cards/" + itoa64(card.ID) + "/comments" }
+				hx-target={ "#card-" + itoa64(card.ID) }
+				hx-swap="morph:outerHTML"
+				method="POST"
+				action={ "/cards/" + itoa64(card.ID) + "/comments" }
+			>
+				<label>
+					<span class="sr-only">Add a comment</span>
+					<input type="text" name="comment" required maxlength="1000" placeholder="Add a comment…"/>
+				</label>
+				<button type="submit">Comment</button>
+			</form>
+		</div>
+		if len(card.Members) > 0 {
+			<div class="group-members">
+				for _, member := range card.Members {
+					@GroupMember(member)
+				}
+			</div>
+		}
+	</article>
+}
+
+// GroupMember renders one nested group member as a non-interactive
+// sub-fragment: no sse-swap, no vote/comment/ungroup controls, and no
+// further nesting. Members act only through their own top-level Card;
+// a group cycle or deep nesting therefore cannot recurse or duplicate
+// stream subscriptions.
+templ GroupMember(member CardView) {
+	<article
+		id={ "card-" + itoa64(member.ID) + "-member" }
+		class={ cardClass(member) }
+	>
+		<p class="card-body">{ member.Body }</p>
+		<footer class="card-foot">
+			<small>
+				if member.AuthorName != "" {
+					{ member.AuthorName }
+				} else {
+					Anonymous
+				}
+				{ " · " + cardVotesLabel(member.Votes) }
+			</small>
+		</footer>
+	</article>
+}
+
+// maxDots caps the visible dot stickers; beyond it the cluster shows
+// the cap plus a hollow "more" dot while the meta line keeps the true
+// count as text.
+const maxDots = 5
+
+func commentCountLabel(n int) string {
+	if n == 1 {
+		return "1 comment"
+	}
+	return itoa(n) + " comments"
+}
+
+// Column is the column fragment: the unit clients swap on column
+// events. The stream subscription beside the id keeps the column live;
+// the add form posts a new card and appends the returned fragment to
+// the list for the acting client, while everyone else morphs this
+// whole section from the broadcast. The pad color rides on --col and
+// tints the header, the spine, and every card in the list.
+templ Column(boardPublicID string, column ColumnView) {
+	<section
+		id={ "column-" + itoa64(column.ID) }
+		class="column"
+		sse-swap={ "column-" + itoa64(column.ID) }
+		hx-swap="morph:outerHTML"
+		style={ "--col: " + columnColor(column.Color) }
+	>
+		<h3>{ column.Title } <span class="count">{ cardCountLabel(len(column.Cards)) }</span></h3>
+		<div
+			class="card-list"
+			data-column={ itoa64(column.ID) }
+			@dragover="dragOver($event)"
+			@dragleave="dragLeave($event)"
+			@drop="drop($event)"
+			x-bind:class={ "{ 'drag-over': isOver('" + itoa64(column.ID) + "') }" }
+		>
+			for _, card := range column.Cards {
+				@Card(card)
+			}
+		</div>
+		if len(column.Cards) == 0 {
+			<p class="empty-invite">No cards yet. Add the first one to start the conversation.</p>
+		}
+		if column.CardsLocked {
+			<p><small>Adding cards is locked.</small></p>
+		} else {
+			<form
+				class="inline-form"
+				hx-post={ "/b/" + boardPublicID + "/cards" }
+				hx-target={ "#column-" + itoa64(column.ID) }
+				hx-swap="morph:outerHTML"
+				method="POST"
+				action={ "/b/" + boardPublicID + "/cards" }
+			>
+				<input type="hidden" name="column_id" value={ itoa64(column.ID) }/>
+				<label>
+					<span class="sr-only">Add a card</span>
+					<input type="text" name="body" required maxlength="2000" placeholder="Add a card…"/>
+				</label>
+				<button type="submit">Add</button>
+			</form>
+		}
+	</section>
+}
+
+func cardClass(card CardView) string {
+	if card.Discussed {
+		return "card discussed"
+	}
+	return "card"
+}
+
+func cardVotesLabel(n int) string {
+	if n == 1 {
+		return "1 vote"
+	}
+	return itoa(n) + " votes"
+}

@@ -1,0 +1,778 @@
+package templates
+
+// BoardNew is the creation page: name, context, template picker, and an
+// optional carry-over selector for unfinished actions from earlier boards.
+// Each template option previews its sticky-pad colors.
+templ BoardNew(sources []CarrySource, formats []BoardTemplate) {
+	@Base("Hindsight — new board") {
+		<main class="container">
+			<header class="page-head">
+				<a href="/" class="crumb">Boards</a>
+				<h1 class="wordmark">New board</h1>
+				<p class="lede">Pick a format, invite the team with the share link, retro together live.</p>
+			</header>
+			<form class="create-form" method="POST" action="/boards">
+				<label>
+					Board name
+					<input type="text" name="name" required maxlength="200" placeholder="Sprint 12 retro"/>
+				</label>
+				<label>
+					Context <small>(optional: sprint, dates, links)</small>
+					<input type="text" name="context" maxlength="2000" placeholder="What are we looking back on?"/>
+				</label>
+				<label>
+					Your display name
+					<input type="text" name="display_name" maxlength="100" placeholder="Facilitator"/>
+				</label>
+				<fieldset>
+					<legend>Template</legend>
+					<div class="template-picker">
+						for i, format := range formats {
+							<label>
+								<input
+									type="radio"
+									name="template"
+									value={ format.Key }
+									if i == 0 {
+										checked
+									}
+								/>
+								<strong>{ format.Name }</strong>
+								<span class="pad-dots" aria-hidden="true">
+									for _, col := range format.Columns {
+										<i style={ "background:" + columnColor(col.Color) }></i>
+									}
+								</span>
+								<small>{ format.Blurb }</small>
+							</label>
+						}
+					</div>
+				</fieldset>
+				<label>
+					Carry over open actions
+					<select name="carry_from">
+						<option value="">Don't carry actions</option>
+						for _, source := range sources {
+							<option value={ source.PublicID }>
+								{ source.Name } ({ itoa(source.OpenActions) } open)
+							</option>
+						}
+					</select>
+				</label>
+				if len(sources) == 0 {
+					<p><small>No earlier boards have open actions to carry over.</small></p>
+				}
+				<button type="submit" class="primary">Create board</button>
+			</form>
+		</main>
+	}
+}
+
+// JoinGate is the name modal shown to visitors without a participant
+// cookie. Joining returns the board columns for an in-place swap. The
+// main element carries the same shell scope as the board page, so
+// bindings arriving with the joined columns resolve from the start.
+templ JoinGate(board BoardView) {
+	@Base("Join — " + board.Name) {
+		<main
+			class="container"
+			x-data="boardDnD()"
+			@board-swapped.window="markStale()"
+		>
+			<div id="join-gate" class="gate" role="dialog" aria-modal="true" aria-label="Join board">
+				<a href="/" class="crumb">Boards</a>
+				<p class="board-name">{ board.Name }</p>
+				if board.Context != "" {
+					<p>{ board.Context }</p>
+				}
+				<p>You've been invited to retro together. Pick a display name to join.</p>
+				<form
+					hx-post={ "/b/" + board.PublicID + "/join" }
+					hx-target="#join-gate"
+					hx-swap="outerHTML"
+					method="POST"
+					action={ "/b/" + board.PublicID + "/join" }
+				>
+					<label>
+						Display name
+						<input type="text" name="name" required maxlength="100" placeholder="Your name"/>
+					</label>
+					<button type="submit" class="primary">Join board</button>
+				</form>
+			</div>
+		</main>
+	}
+}
+
+// BoardPage is the board shell: a sticky rail (name, phase stations,
+// timer), facilitation controls, and the columns. revealToken is
+// non-empty only on the single first view after creation, when the
+// facilitator token is shown exactly once. The main element owns the
+// board's local UI state (drag-and-drop): the single x-data scope sits
+// above every swap target, and card and column fragments below carry
+// bindings only. The countdown placeholder lives in the rail, outside
+// any swapped subtree; the countdown itself arrives separately and only
+// reads that node.
+templ BoardPage(board BoardView, columns []ColumnView, kudos []KudoView, actions []ActionView, isFacilitator bool, participantName string, revealToken string, participantLink string, facilitatorLink string) {
+	@Base(board.Name + " — Hindsight") {
+		<main
+			class="container board-shell"
+			x-data="boardDnD()"
+			@board-swapped.window="markStale()"
+		>
+			<header class="board-rail">
+				<div class="rail-top">
+					<a href="/" class="crumb">Boards</a>
+					<h1 class="board-name">{ board.Name }</h1>
+					if board.Context != "" {
+						<p class="rail-context">{ board.Context }</p>
+					}
+					<div class="rail-side">
+						if participantName != "" {
+							<span class="chip" title={ "Joined as " + participantName }>{ participantName }</span>
+						}
+					</div>
+				</div>
+				<div class="rail-bottom">
+					@PhaseRail(board.Phase)
+					<span class="spacer"></span>
+					<div class="share-controls" aria-label="Share">
+						<button id="copy-participant-link" data-link={ participantLink }>Copy participant link</button>
+						if isFacilitator {
+							<button id="copy-facilitator-link" data-link={ facilitatorLink }>Copy facilitator link</button>
+						}
+					</div>
+					@TimerFragment(board)
+				</div>
+			</header>
+			if board.FocusedCardID != nil {
+				<section id="spotlight" data-focus={ FocusAttr(board.FocusedCardID) } aria-label="Spotlight" aria-live="polite">
+					<p><strong>Now discussing:</strong> <span id="spotlight-label">{ "Card " + FocusAttr(board.FocusedCardID) }</span></p>
+				</section>
+			} else {
+				<section id="spotlight" data-focus="" aria-label="Spotlight" aria-live="polite" hidden>
+					<p><strong>Now discussing:</strong> <span id="spotlight-label">Card</span></p>
+				</section>
+			}
+			if isFacilitator {
+				@FacilitatorPanel(board, columns)
+			}
+			if revealToken != "" {
+				@FacilitatorTokenReveal(revealToken)
+			}
+			@ColumnsFragment(board.PublicID, columns, kudos, actions)
+			<section
+				id="export-section"
+				class="board-foot"
+				aria-label="Export"
+				data-export-url={ "/b/" + board.PublicID + "/export.md" }
+				x-data="exportCopy()"
+			>
+				<h2>Export</h2>
+				<p><a id="export-download" href={ "/b/" + board.PublicID + "/export.md" } download>Download board as Markdown</a></p>
+				<p class="button-row">
+					<button id="copy-export" type="button" @click="copyMarkdown()">Copy Markdown</button>
+					<button id="print-board" type="button" @click="window.print()">Print</button>
+				</p>
+				<p aria-live="polite"><small x-text="status"></small></p>
+			</section>
+			<script>
+				(function () {
+					// Facilitation live updates. The fac-events node inside
+					// the columns root registers one stream listener per
+					// control event; every arrival re-triggers here as
+					// htmx:sseMessage carrying the MessageEvent, and this
+					// router applies the JSON payloads. Column-affecting
+					// changes converge through the same root refresh the
+					// disconnected poller uses, so the page keeps exactly
+					// one event source.
+					function columnsUrl() {
+						var root = document.getElementById("board-columns");
+						return (root && root.getAttribute("data-columns-url")) ||
+							(window.location.pathname + "?fragment=columns");
+					}
+					function flash(text) {
+						var home = document.getElementById("flash");
+						if (!home) return;
+						home.className = "flash-error";
+						home.textContent = text;
+					}
+					var phaseNames = { collect: "Collect", vote: "Vote", discuss: "Discuss", done: "Done" };
+					function setPhase(phase) {
+						var badge = document.getElementById("phase-badge");
+						if (badge) {
+							badge.setAttribute("data-phase", phase);
+							var label = badge.querySelector(".phase-badge");
+							if (label) label.textContent = "Phase: " + (phaseNames[phase] || phase);
+						}
+						var current = document.getElementById("panel-phase-current");
+						if (current) current.textContent = "Current: " + (phaseNames[phase] || phase);
+						var panel = document.getElementById("facilitator-panel");
+						if (panel) {
+							var buttons = panel.querySelectorAll('button[name="phase"]');
+							for (var i = 0; i < buttons.length; i++) {
+								buttons[i].setAttribute("aria-pressed", buttons[i].value === phase ? "true" : "false");
+							}
+						}
+					}
+					function applySpotlight(id) {
+						var banner = document.getElementById("spotlight");
+						if (!banner) return;
+						var marked = document.querySelectorAll(".card.spotlight");
+						for (var i = 0; i < marked.length; i++) marked[i].classList.remove("spotlight");
+						if (!id) {
+							banner.setAttribute("data-focus", "");
+							banner.setAttribute("hidden", "");
+							return;
+						}
+						banner.setAttribute("data-focus", String(id));
+						banner.removeAttribute("hidden");
+						var label = document.getElementById("spotlight-label");
+						if (label) label.textContent = "Card " + String(id);
+						var node = document.getElementById("card-" + String(id));
+						if (node) {
+							node.classList.add("spotlight");
+							if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+						}
+					}
+					function reapplySpotlight() {
+						var banner = document.getElementById("spotlight");
+						if (!banner) return;
+						var id = banner.getAttribute("data-focus") || "";
+						if (!id) return;
+						var node = document.getElementById("card-" + id);
+						if (node) node.classList.add("spotlight");
+					}
+					function setTimerEndsAt(iso) {
+						var node = document.getElementById("timer");
+						if (!node) return;
+						node.setAttribute("data-ends-at", iso || "");
+						node.setAttribute("data-state", iso ? "running" : "idle");
+						if (window.__boardTimerTick) window.__boardTimerTick();
+					}
+					function timerEnded() {
+						var node = document.getElementById("timer");
+						if (node) {
+							node.setAttribute("data-ends-at", "");
+							node.setAttribute("data-state", "ended");
+							var small = node.querySelector("small");
+							if (small) small.textContent = "Time's up!";
+						}
+						flash("Time's up!");
+					}
+					document.body.addEventListener("htmx:sseMessage", function (event) {
+						var msg = event.detail;
+						if (!msg || typeof msg.type !== "string") return;
+						if (msg.type === "cards-revealed") {
+							if (window.refreshColumnsRoot) window.refreshColumnsRoot(columnsUrl());
+							return;
+						}
+						// The resync marker carries a non-JSON payload, so
+						// it refetches before the JSON router below (which
+						// would drop it in its parse catch), converging
+						// through the same root refresh as a reveal.
+						if (msg.type === "sync-required") {
+							if (window.refreshColumnsRoot) window.refreshColumnsRoot(columnsUrl());
+							return;
+						}
+						var payload = null;
+						try {
+							payload = JSON.parse(msg.data || "");
+						} catch (e) {
+							return;
+						}
+						if (msg.type === "phase") {
+							if (payload && typeof payload.phase === "string") setPhase(payload.phase);
+						} else if (msg.type === "focus") {
+							applySpotlight(payload ? payload.card_id : null);
+						} else if (msg.type === "timer") {
+							setTimerEndsAt(payload ? payload.ends_at : null);
+						} else if (msg.type === "timer-ended") {
+							timerEnded();
+						}
+					});
+					document.body.addEventListener("board-swapped", function () { reapplySpotlight(); });
+					reapplySpotlight();
+					var groupForm = document.getElementById("group-form");
+					if (groupForm) {
+						groupForm.addEventListener("submit", function (ev) {
+							ev.preventDefault();
+							var cardInput = groupForm.querySelector('input[name="card_id"]');
+							var leaderInput = groupForm.querySelector('input[name="leader_id"]');
+							var card = cardInput && cardInput.value ? cardInput.value.trim() : "";
+							var leader = leaderInput && leaderInput.value ? leaderInput.value.trim() : "";
+							if (!card || !leader) {
+								flash("Card ID and Leader ID are both required.");
+								return;
+							}
+							fetch("/cards/" + encodeURIComponent(card), {
+								method: "PUT",
+								credentials: "same-origin",
+								headers: { "Content-Type": "application/x-www-form-urlencoded" },
+								body: new URLSearchParams({ group_id: leader }).toString(),
+							}).then(function (res) {
+								if (!res.ok) flash("Grouping failed — check the card IDs and try again.");
+							}).catch(function () { flash("Grouping failed — reload and try again."); });
+						});
+					}
+				})();
+				// Countdown scope factory. Exactly one scope exists, on the
+				// timer node in the board rail — outside every swapped
+				// subtree, so the stream never destroys it. The server owns
+				// the instant; this only renders it and re-syncs after the
+				// tab was hidden.
+				function boardTimer() {
+					return {
+						endsAt: null,
+						timer: null,
+						init: function () {
+							var self = this;
+							if (window.__boardTimerInterval) window.clearInterval(window.__boardTimerInterval);
+							if (this.timer) window.clearInterval(this.timer);
+							this.read();
+							this.tick();
+							window.__boardTimerTick = function () { self.read(); self.tick(); };
+							this.timer = window.setInterval(function () { self.tick(); }, 1000);
+							window.__boardTimerInterval = this.timer;
+							document.addEventListener("visibilitychange", function () {
+								if (!document.hidden) self.resync();
+							});
+						},
+						destroy: function () {
+							if (this.timer) window.clearInterval(this.timer);
+							if (window.__boardTimerInterval === this.timer) window.__boardTimerInterval = null;
+							this.timer = null;
+						},
+						node: function () { return document.getElementById("timer"); },
+						read: function () {
+							var node = this.node();
+							var raw = node ? (node.getAttribute("data-ends-at") || "") : "";
+							this.endsAt = raw ? Date.parse(raw) : null;
+							if (this.endsAt !== null && isNaN(this.endsAt)) this.endsAt = null;
+						},
+						url: function () {
+							var node = this.node();
+							return (node && node.getAttribute("data-timer-url")) ||
+								(window.location.pathname + "?fragment=timer");
+						},
+						text: function () {
+							var node = this.node();
+							return node ? node.querySelector("small") : null;
+						},
+						tick: function () {
+							var el = this.text();
+							if (!el) return;
+							var node = this.node();
+							var state = node ? node.getAttribute("data-state") : "idle";
+							if (state === "ended") {
+								el.textContent = "Time's up!";
+								if (node) node.setAttribute("data-urgent", "0");
+								return;
+							}
+							if (this.endsAt === null) {
+								el.textContent = "No timer running";
+								if (node) node.setAttribute("data-urgent", "0");
+								return;
+							}
+							var left = Math.max(0, Math.floor((this.endsAt - Date.now()) / 1000));
+							var mins = Math.floor(left / 60);
+							var secs = left % 60;
+							el.textContent = mins + ":" + (secs < 10 ? "0" : "") + secs + " left";
+							if (node) node.setAttribute("data-urgent", left > 0 && left <= 60 ? "1" : "0");
+						},
+						resync: function () {
+							var self = this;
+							fetch(this.url(), { credentials: "same-origin" }).then(function (res) {
+								if (!res.ok) throw new Error("timer resync failed");
+								return res.text();
+							}).then(function (html) {
+								var doc = new DOMParser().parseFromString(html, "text/html");
+								var fresh = doc.getElementById("timer");
+								var node = self.node();
+								if (fresh && node) {
+									node.setAttribute("data-ends-at", fresh.getAttribute("data-ends-at") || "");
+									node.setAttribute("data-state", fresh.getAttribute("data-state") || "idle");
+								}
+								self.read();
+								self.tick();
+							}).catch(function () { /* keep the last known instant */ });
+						},
+					};
+				}
+				window.boardTimer = boardTimer;
+			</script>
+			<script>
+				(function () {
+					function copyText(text, button) {
+						function done(ok) {
+							if (!button) return;
+							button.textContent = ok ? "Copied!" : "Copy failed";
+						}
+						if (navigator.clipboard && navigator.clipboard.writeText) {
+							navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+						} else {
+							var area = document.createElement("textarea");
+							area.value = text;
+							document.body.appendChild(area);
+							area.select();
+							try { done(document.execCommand("copy")); } catch (e) { done(false); }
+							document.body.removeChild(area);
+						}
+					}
+					document.addEventListener("click", function (event) {
+						var target = event.target;
+						if (!(target instanceof HTMLElement)) return;
+						var node = target.closest("[data-link],[data-copy]");
+						if (!node) return;
+						var text = node.getAttribute("data-link") || node.getAttribute("data-copy");
+						if (text) copyText(text, node);
+					});
+				})();
+				// Export copy scope factory. The single scope sits on
+				// the export section, above every swap target, so the
+				// stream never destroys it. Copying fetches the
+				// Markdown download, then prefers navigator.clipboard
+				// with a textarea fallback for older browsers. A bound
+				// status line announces the outcome; a denied fetch
+				// (for example a hidden board) reports failure instead
+				// of copying an error page.
+				function exportCopy() {
+					return {
+						status: "",
+						copyMarkdown: function () {
+							var self = this;
+							var root = document.getElementById("export-section");
+							var url = (root && root.getAttribute("data-export-url")) ||
+								(window.location.pathname + "/export.md");
+							function report(ok) {
+								self.status = ok ? "Copied!" : "Copy failed — download the file instead.";
+							}
+							function place(text) {
+								if (navigator.clipboard && navigator.clipboard.writeText) {
+									navigator.clipboard.writeText(text).then(function () { report(true); }, function () { report(false); });
+								} else {
+									var area = document.createElement("textarea");
+									area.value = text;
+									document.body.appendChild(area);
+									area.select();
+									try { report(document.execCommand("copy")); } catch (e) { report(false); }
+									document.body.removeChild(area);
+								}
+							}
+							fetch(url, { credentials: "same-origin" }).then(function (res) {
+								if (!res.ok) throw new Error("export fetch failed");
+								return res.text();
+							}).then(place, function () { report(false); });
+						},
+					};
+				}
+				window.exportCopy = exportCopy;
+			</script>
+		</main>
+	}
+}
+
+// PhaseRail is the board's station strip: four dots for the retro's
+// real sequence (collect → vote → discuss → done), the current one
+// marked, plus the live text label. CSS drives the dots from
+// [data-phase]; the label text is updated by the facilitation router.
+templ PhaseRail(phase string) {
+	<p id="phase-badge" class="phase-rail" data-phase={ phase }>
+		<span class="station" data-station="collect"><i aria-hidden="true"></i> Collect</span>
+		<span class="station" data-station="vote"><i aria-hidden="true"></i> Vote</span>
+		<span class="station" data-station="discuss"><i aria-hidden="true"></i> Discuss</span>
+		<span class="station" data-station="done"><i aria-hidden="true"></i> Done</span>
+		<span class="phase-badge">{ "Phase: " + PhaseLabel(phase) }</span>
+	</p>
+}
+
+// FacilitatorTokenReveal shows a raw facilitator token exactly once:
+// on the first board view after creation, or as the regeneration
+// answer. The value never renders again and cannot be recovered from
+// the server, so both call sites share this one fragment.
+templ FacilitatorTokenReveal(token string) {
+	<section id="facilitator-token" class="callout" aria-label="Facilitator token">
+		<h2>Facilitator token — shown once</h2>
+		<p>Save this now. It never appears again and cannot be recovered from the server.</p>
+		<p><code id="facilitator-token-value">{ token }</code></p>
+		<button
+			id="copy-facilitator-token"
+			data-copy={ token }
+		>Copy facilitator token</button>
+	</section>
+}
+
+// ColumnsFragment renders every column of a board with its cards. The
+// join endpoint returns exactly this fragment. The wrapper holds the
+// board page's single stream subscription; each column below carries
+// its own listener, so column broadcasts morph only their section. The
+// flash home gives denied mutations a render target, and the connection
+// badge (driven by the layout script from the stream open/error events)
+// falls back to polling this fragment's URL while disconnected.
+templ ColumnsFragment(boardPublicID string, columns []ColumnView, kudos []KudoView, actions []ActionView) {
+	<div
+		id="board-columns"
+		sse-connect={ "/b/" + boardPublicID + "/events" }
+		data-columns-url={ "/b/" + boardPublicID + "?fragment=columns" }
+		hx-ext="morph, sse"
+	>
+		<div class="board-status">
+			<div id="flash" role="status" aria-live="polite"></div>
+			<p id="connection-badge" role="status" data-connected="false"><small>Connecting…</small></p>
+		</div>
+		<div
+			id="fac-events"
+			hidden
+			hx-trigger="sse:cards-revealed, sse:phase, sse:focus, sse:timer, sse:timer-ended, sse:sync-required"
+		></div>
+		<div
+			id="wall-removals"
+			hidden
+			sse-swap="kudos-removed, action-removed"
+			hx-swap="none"
+		></div>
+		<div class="board-columns-grid">
+			for _, column := range columns {
+				@Column(boardPublicID, column)
+			}
+		</div>
+		<div class="walls-grid">
+			@KudosWall(boardPublicID, kudos)
+			@ActionsWall(boardPublicID, actions)
+		</div>
+	</div>
+}
+
+// TimerFragment is the countdown node. It lives in the board rail,
+// outside every swapped subtree, so the stream never replaces it; the
+// countdown scope below only reads and writes this node. The timer
+// fragment endpoint returns exactly this node for re-syncs.
+templ TimerFragment(board BoardView) {
+	<p
+		id="timer"
+		x-data="boardTimer()"
+		data-timer-url={ "/b/" + board.PublicID + "?fragment=timer" }
+		data-ends-at={ TimerEndsAtAttr(board.TimerEndsAt) }
+		data-state={ timerState(board.TimerEndsAt) }
+	><small>{ timerText(board.TimerEndsAt) }</small></p>
+}
+
+// FacilitatorPanel is the facilitation control surface, grouped as a
+// toolbar of labeled clusters. Every control posts with
+// hx-swap="none": the server broadcasts the change and the stream
+// converges every viewer, including the actor. The toggle scope sits
+// on this section, above every swap target.
+templ FacilitatorPanel(board BoardView, columns []ColumnView) {
+	<section id="facilitator-panel" aria-label="Facilitator controls" x-data="{ open: false }">
+		<h2>
+			<button type="button" @click="open = !open" :aria-expanded="open ? 'true' : 'false'">
+				Facilitator controls
+			</button>
+		</h2>
+		<div x-show="open" x-cloak>
+			<div class="fac-groups">
+				<div>
+					<h3>Phase</h3>
+					<p><small id="panel-phase-current">Current: { PhaseLabel(board.Phase) }</small></p>
+					<form
+						class="button-row"
+						hx-post={ "/b/" + board.PublicID + "/phase" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/phase" }
+					>
+						for _, phase := range []string{"collect", "vote", "discuss", "done"} {
+							<button type="submit" name="phase" value={ phase } aria-pressed={ pressed(board.Phase, phase) }>{ PhaseLabel(phase) }</button>
+						}
+					</form>
+				</div>
+				<div>
+					<h3>Timer</h3>
+					<p class="button-row">
+						for _, preset := range timerPresets {
+							<form
+								hx-post={ "/b/" + board.PublicID + "/timer" }
+								hx-swap="none"
+								method="POST"
+								action={ "/b/" + board.PublicID + "/timer" }
+							>
+								<input type="hidden" name="seconds" value={ itoa(preset.Seconds) }/>
+								<button type="submit" class="small">{ preset.Label }</button>
+							</form>
+						}
+					</p>
+					<form
+						class="inline-form"
+						hx-post={ "/b/" + board.PublicID + "/timer" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/timer" }
+					>
+						<label>
+							Seconds
+							<input type="number" name="seconds" min="1" max="86400" required placeholder="300"/>
+						</label>
+						<button type="submit">Start</button>
+					</form>
+					<form
+						hx-post={ "/b/" + board.PublicID + "/timer" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/timer" }
+					>
+						<input type="hidden" name="seconds" value="0"/>
+						<button type="submit" class="small">Stop timer</button>
+					</form>
+				</div>
+				<div>
+					<h3>Cards &amp; voting</h3>
+					if board.CardsHidden {
+						<p><small>Cards are hidden from participants.</small></p>
+						<form
+							hx-post={ "/b/" + board.PublicID + "/reveal" }
+							hx-swap="none"
+							method="POST"
+							action={ "/b/" + board.PublicID + "/reveal" }
+						>
+							<button type="submit">Reveal cards</button>
+						</form>
+					} else {
+						<p><small>Cards are visible to everyone.</small></p>
+					}
+					<form
+						hx-post={ "/b/" + board.PublicID + "/lock" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/lock" }
+					>
+						<input type="hidden" name="target" value="voting"/>
+						<input type="hidden" name="locked" value={ lockFlip(board.VotingLocked) }/>
+						if board.VotingLocked {
+							<button type="submit" class="small">Unlock voting</button>
+						} else {
+							<button type="submit" class="small">Lock voting</button>
+						}
+					</form>
+					<form
+						hx-post={ "/b/" + board.PublicID + "/lock" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/lock" }
+					>
+						<input type="hidden" name="target" value="cards"/>
+						<input type="hidden" name="locked" value={ lockFlip(board.CardsLocked) }/>
+						if board.CardsLocked {
+							<button type="submit" class="small">Unlock adding cards</button>
+						} else {
+							<button type="submit" class="small">Lock adding cards</button>
+						}
+					</form>
+				</div>
+				<div>
+					<h3>Spotlight</h3>
+					<form
+						hx-post={ "/b/" + board.PublicID + "/focus/next" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/focus/next" }
+					>
+						<button type="submit" class="small">Next card</button>
+					</form>
+					<form
+						hx-post={ "/b/" + board.PublicID + "/focus/prev" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/focus/prev" }
+					>
+						<button type="submit" class="small">Previous card</button>
+					</form>
+					<form
+						hx-post={ "/b/" + board.PublicID + "/focus" }
+						hx-swap="none"
+						method="POST"
+						action={ "/b/" + board.PublicID + "/focus" }
+					>
+						<input type="hidden" name="card_id" value=""/>
+						<button type="submit" class="small">Clear spotlight</button>
+					</form>
+				</div>
+				<div>
+					<h3>Sort by votes</h3>
+					for _, column := range columns {
+						<form
+							class="inline-form"
+							hx-post={ "/b/" + board.PublicID + "/sort" }
+							hx-swap="none"
+							method="POST"
+							action={ "/b/" + board.PublicID + "/sort" }
+						>
+							<input type="hidden" name="column_id" value={ itoa64(column.ID) }/>
+							<button type="submit" class="small">{ column.Title }</button>
+						</form>
+					}
+				</div>
+				<div>
+					<h3>Group cards</h3>
+					<p><small>Each card shows its id, like #12. Nest one under another.</small></p>
+					<form id="group-form" method="POST" action="#">
+						<label>
+							Card ID
+							<input type="text" name="card_id" inputmode="numeric" required placeholder="Card to nest"/>
+						</label>
+						<label>
+							Leader ID
+							<input type="text" name="leader_id" inputmode="numeric" required placeholder="Group under"/>
+						</label>
+						<button type="submit" class="small">Group cards</button>
+					</form>
+				</div>
+				<div>
+					<h3>Facilitator token</h3>
+					<p><small>Regenerating invalidates the current token immediately; the new one is shown once.</small></p>
+					<div id="facilitator-token-slot" aria-live="polite"></div>
+					<form
+						hx-post={ "/boards/" + board.PublicID + "/regenerate" }
+						hx-target="#facilitator-token-slot"
+						hx-swap="innerHTML"
+						method="POST"
+						action={ "/boards/" + board.PublicID + "/regenerate" }
+					>
+						<button type="submit" class="small">Regenerate facilitator token</button>
+					</form>
+				</div>
+			</div>
+		</div>
+	</section>
+}
+
+// timerPreset is one quick-pick duration for the facilitator timer.
+type timerPreset struct {
+	Seconds int
+	Label   string
+}
+
+// timerPresets lists the quick picks offered beside the custom field.
+var timerPresets = []timerPreset{
+	{Seconds: 60, Label: "1 min"},
+	{Seconds: 300, Label: "5 min"},
+	{Seconds: 600, Label: "10 min"},
+}
+
+func itoa64(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	if negative {
+		digits = append([]byte{'-'}, digits...)
+	}
+	return string(digits)
+}

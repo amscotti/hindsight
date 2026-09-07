@@ -1,0 +1,20 @@
+package templates
+
+// Landing is the public entry page: product blurb plus the call to action
+// that starts a new retro board.
+templ Landing() {
+	@Base("Hindsight — team retrospectives") {
+		<main class="container">
+			<header class="page-head">
+				<h1 class="wordmark">Hindsight</h1>
+				<p class="lede">Self-hosted team retrospectives: collect, vote, discuss, act.</p>
+				<div class="cta-row">
+					<a href="/new" role="button">Start a new retro board</a>
+				</div>
+			</header>
+			<section>
+				<p>No accounts. Create a board, share the link, and retro together live.</p>
+			</section>
+		</main>
+	}
+}

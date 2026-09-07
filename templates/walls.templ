@@ -1,0 +1,218 @@
+package templates
+
+// Kudo is one entry on the board-level kudos wall. The stable id lets
+// removals drop this node wherever it sits through the out-of-band
+// delete payload. Like cards, this fragment carries bindings only;
+// Alpine scopes stay above the swap targets.
+templ Kudo(kudo KudoView) {
+	<article id={ "kudo-" + itoa64(kudo.ID) } class="kudo">
+		<p><strong>To { kudo.To }</strong></p>
+		<p class="kudo-body">{ kudo.Body }</p>
+		<p>
+			<small>
+				if kudo.From != "" {
+					from { kudo.From }
+				} else {
+					from Anonymous
+				}
+			</small>
+		</p>
+		<form
+			hx-delete={ "/kudos/" + itoa64(kudo.ID) }
+			hx-target={ "#kudo-" + itoa64(kudo.ID) }
+			hx-swap="morph:outerHTML"
+			method="POST"
+			action={ "/kudos/" + itoa64(kudo.ID) }
+		>
+			<button type="submit" class="small">Delete</button>
+		</form>
+	</article>
+}
+
+// KudosList is the wall content: every entry in insertion order. Adds
+// converge through this fragment: the add form below and the
+// kudos-added broadcast both swap it in whole, so either arrival order
+// lands on the same list. Removals arrive as out-of-band deletes on
+// the wall-removals sink in the board shell, which applies them
+// without touching this list. The delete control renders for every
+// viewer so the broadcast stays uniform; the server allows only the
+// author or the facilitator.
+templ KudosList(kudos []KudoView) {
+	for _, kudo := range kudos {
+		@Kudo(kudo)
+	}
+	if len(kudos) == 0 {
+		<p class="empty-invite"><small>No kudos yet. Thank someone to start the wall.</small></p>
+	}
+}
+
+// KudosWall is the board-level kudos section. The list node subscribes
+// to the wall events; the add form posts a new entry and swaps the
+// returned list in place for the acting client.
+templ KudosWall(boardPublicID string, kudos []KudoView) {
+	<section id="kudos-wall" aria-label="Kudos wall">
+		<h2>Kudos</h2>
+		<div
+			id="kudos-list"
+			sse-swap="kudos-added"
+			hx-swap="morph:innerHTML"
+		>
+			@KudosList(kudos)
+		</div>
+		<form
+			hx-post={ "/b/" + boardPublicID + "/kudos" }
+			hx-target="#kudos-list"
+			hx-swap="morph:innerHTML"
+			method="POST"
+			action={ "/b/" + boardPublicID + "/kudos" }
+		>
+			<label>
+				To
+				<input type="text" name="to" required maxlength="200" placeholder="Who deserves thanks?"/>
+			</label>
+			<label>
+				Message
+				<input type="text" name="body" required maxlength="500" placeholder="What did they do?"/>
+			</label>
+			<p class="posting-as"><small>Kudos post under your display name.</small></p>
+			<button type="submit">Add kudos</button>
+		</form>
+	</section>
+}
+
+// ActionItem is one action item on the board wall. The stable id lets
+// edits morph this node in place and removals drop it out-of-band.
+// The toggle and edit forms post to the same endpoint. Every control
+// renders for every viewer so wall broadcasts stay uniform; the server
+// gates each mutation (author or facilitator to edit, facilitator to
+// delete) with the flash fragment on denial.
+templ ActionItem(action ActionView) {
+	<article id={ "action-" + itoa64(action.ID) } class={ actionClass(action) }>
+		<p class="action-text">{ action.Text }</p>
+		<p>
+			<small>
+				if action.Owner != "" {
+					Owner: { action.Owner }
+				} else {
+					No owner yet
+				}
+				if action.Done {
+					 · Done
+				} else {
+					 · Open
+				}
+				if action.CarriedFrom != nil {
+					 · Carried over
+				}
+			</small>
+		</p>
+		<div class="action-controls">
+			if action.Done {
+				<form
+					hx-put={ "/actions/" + itoa64(action.ID) }
+					hx-target={ "#action-" + itoa64(action.ID) }
+					hx-swap="morph:outerHTML"
+					method="POST"
+					action={ "/actions/" + itoa64(action.ID) }
+				>
+					<input type="hidden" name="done" value="0"/>
+					<button type="submit">Reopen</button>
+				</form>
+			} else {
+				<form
+					hx-put={ "/actions/" + itoa64(action.ID) }
+					hx-target={ "#action-" + itoa64(action.ID) }
+					hx-swap="morph:outerHTML"
+					method="POST"
+					action={ "/actions/" + itoa64(action.ID) }
+				>
+					<input type="hidden" name="done" value="1"/>
+					<button type="submit">Mark done</button>
+				</form>
+			}
+			<details class="action-edit">
+				<summary>Edit</summary>
+				<form
+					class="edit-fields"
+					hx-put={ "/actions/" + itoa64(action.ID) }
+					hx-target={ "#action-" + itoa64(action.ID) }
+					hx-swap="morph:outerHTML"
+					method="POST"
+					action={ "/actions/" + itoa64(action.ID) }
+				>
+					<label>
+						Text
+						<input type="text" name="text" maxlength="500" value={ action.Text }/>
+					</label>
+					<label>
+						Owner
+						<input type="text" name="owner" maxlength="100" value={ action.Owner }/>
+					</label>
+					<button type="submit">Save</button>
+				</form>
+				<form
+					hx-delete={ "/actions/" + itoa64(action.ID) }
+					hx-target={ "#action-" + itoa64(action.ID) }
+					hx-swap="morph:outerHTML"
+					method="POST"
+					action={ "/actions/" + itoa64(action.ID) }
+				>
+					<button type="submit">Delete</button>
+				</form>
+			</details>
+		</div>
+	</article>
+}
+
+// ActionsList is the wall content: every item in id order, open and
+// done. Like the kudos list, adds and edits converge through whole
+// swaps of this fragment while removals delete nodes out-of-band on
+// the wall-removals sink.
+templ ActionsList(actions []ActionView) {
+	for _, action := range actions {
+		@ActionItem(action)
+	}
+	if len(actions) == 0 {
+		<p class="empty-invite"><small>No action items yet. Capture what the team will do next.</small></p>
+	}
+}
+
+// ActionsWall is the board-level action-items section. Action texts
+// stay visible to everyone at all times: commitments, not ideas, so
+// no redaction flavor exists for this wall.
+templ ActionsWall(boardPublicID string, actions []ActionView) {
+	<section id="actions-wall" aria-label="Action items">
+		<h2>Action items</h2>
+		<div
+			id="actions-list"
+			sse-swap="action-added, action-updated"
+			hx-swap="morph:innerHTML"
+		>
+			@ActionsList(actions)
+		</div>
+		<form
+			hx-post={ "/b/" + boardPublicID + "/actions" }
+			hx-target="#actions-list"
+			hx-swap="morph:innerHTML"
+			method="POST"
+			action={ "/b/" + boardPublicID + "/actions" }
+		>
+			<label>
+				Action
+				<input type="text" name="text" required maxlength="500" placeholder="What will we do?"/>
+			</label>
+			<label>
+				Owner <small>(optional)</small>
+				<input type="text" name="owner" maxlength="100" placeholder="Who owns it?"/>
+			</label>
+			<button type="submit">Add action</button>
+		</form>
+	</section>
+}
+
+func actionClass(action ActionView) string {
+	if action.Done {
+		return "action done"
+	}
+	return "action"
+}

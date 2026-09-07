@@ -1,0 +1,24 @@
+# Binaries and build output
+/hindsight
+/hindsight-*
+*.test
+coverage.out
+coverage.html
+
+# Runtime data (SQLite lives here; never commit databases)
+/data/
+
+# Go caches
+/vendor/
+
+# Node (Playwright e2e scaffold)
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.review/

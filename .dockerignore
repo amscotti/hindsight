@@ -1,0 +1,21 @@
+# Keep the build context to what the image needs: Go sources, the
+# embedded inputs (static/, db/migrations/, *.templ), and module files.
+.git
+data/
+hindsight
+hindsight-*
+*.test
+coverage.out
+coverage.html
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+e2e/
+.github/
+testdata/
+**/testdata/
+*.db*
+*.sqlite*
+.DS_Store
+.idea/
+.vscode/

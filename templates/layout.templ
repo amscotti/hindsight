@@ -1,0 +1,439 @@
+package templates
+
+// Base is the shared page shell: local type and the app stylesheet in
+// the head, plus the vendored script bundle (htmx core, SSE extension,
+// idiomorph morph extension, Alpine) at the end of the body. All asset
+// URLs are local; pages must never link a CDN.
+templ Base(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+		<title>{ title }</title>
+		<link rel="stylesheet" href="/static/fonts.css"/>
+		<link rel="stylesheet" href="/static/app.css"/>
+		</head>
+		<body>
+			{ children... }
+			<script src="/static/vendor/htmx.min.js" defer></script>
+			<script src="/static/vendor/sse.js" defer></script>
+			<script src="/static/vendor/idiomorph-ext.min.js" defer></script>
+			<script src="/static/vendor/alpine.min.js" defer></script>
+			<script>
+				(function () {
+					// Connection badge and the single post-swap hook. The
+					// hook re-processes swapped board subtrees so stream
+					// listeners attach to nodes a morph swap inserts (cards
+					// arriving through a column broadcast) and
+					// re-initializes local bindings on fresh nodes. Morph
+					// patches the swap target in place, which leaves freshly
+					// inserted descendants unprocessed; this single hook
+					// closes that gap. The stream root itself is skipped so
+					// the page keeps exactly one event source. It lives in
+					// the base layout (not the board shell) so joined
+					// viewers who never load the shell still get it. Every
+					// board-subtree swap also notifies the shell scope,
+					// which treats a swap landing mid-drag as a lost race
+					// and snaps back instead of dropping onto stale slots.
+					// The stream extension fires htmx:sseOpen on connect
+					// and htmx:sseError on drops, both bubbling from the
+					// stream root. While disconnected a 5s columns refetch
+					// keeps the viewer converging until the stream
+					// reopens. Lookups run at event time so
+					// late-joining viewers (whose columns swap in after
+					// load) get the same behavior.
+					var pollMs = 5000;
+					var timer = null;
+					function badge() { return document.getElementById("connection-badge"); }
+					function columns() { return document.getElementById("board-columns"); }
+					function mark(connected) {
+						var el = badge();
+						if (!el) return;
+						el.setAttribute("data-connected", connected ? "true" : "false");
+						var label = el.querySelector("small");
+						if (!label) {
+							label = document.createElement("small");
+							el.replaceChildren(label);
+						}
+						label.textContent = connected ? "Live" : "Offline — retrying";
+					}
+					function poll() {
+						var root = columns();
+						if (!root) return;
+						var url = root.getAttribute("data-columns-url") ||
+							(window.location.pathname + "?fragment=columns");
+						if (window.refreshColumnsRoot) window.refreshColumnsRoot(url);
+					}
+					// Root refresh without nesting: htmx.ajax does not route
+					// extension swap styles, so refetching the stream root
+					// through it would nest a duplicate root (and stream)
+					// instead of replacing. Morph the root directly and
+					// repeat the post-swap hook steps by hand, wiring fresh
+					// listeners below the root without re-processing the
+					// root itself so the page keeps exactly one event
+					// source. Resolves true when the columns morph landed.
+					window.refreshColumnsRoot = function (url) {
+						return fetch(url, { credentials: "same-origin" }).then(function (res) {
+							if (!res.ok) throw new Error("columns refresh failed");
+							var contentType = res.headers ? res.headers.get("Content-Type") || "" : "";
+							if (contentType && contentType.indexOf("text/html") === -1 && contentType.indexOf("application/") !== 0) throw new Error("unexpected content type");
+							return res.text();
+						}).then(function (html) {
+							if (html.indexOf("board-columns") === -1) return false;
+							var root = document.getElementById("board-columns");
+							if (!root || !window.Idiomorph) return false;
+							window.Idiomorph.morph(root, html);
+							var fresh = document.getElementById("board-columns") || root;
+							if (window.htmx) {
+								var lists = fresh.querySelectorAll("section.column");
+								for (var i = 0; i < lists.length; i++) window.htmx.process(lists[i]);
+							}
+							if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(fresh);
+							window.dispatchEvent(new CustomEvent("board-swapped", { detail: { id: "board-columns" } }));
+							return true;
+						}, function () { return false; });
+					};
+					document.body.addEventListener("htmx:sseOpen", function () {
+						if (timer) {
+							window.clearInterval(timer);
+							timer = null;
+						}
+						mark(true);
+					});
+					document.body.addEventListener("htmx:sseError", function () {
+						mark(false);
+						if (!timer) {
+							timer = window.setInterval(poll, pollMs);
+						}
+					});
+					document.body.addEventListener("htmx:afterSwap", function (event) {
+						var detail = event.detail || {};
+						var target = detail.elt || detail.target || event.target;
+						if (!target || !(target instanceof HTMLElement)) return;
+						if (!document.contains(target)) return;
+						if (target.hasAttribute("sse-connect")) return;
+						if (!target.closest("#board-columns")) return;
+						if (window.htmx) window.htmx.process(target);
+						if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(target);
+						if (window.__voteApply) window.__voteApply();
+						window.dispatchEvent(new CustomEvent("board-swapped", { detail: { id: target.id || "" } }));
+						// A poll refetch replaces the badge with its pristine
+						// markup; re-mark offline until the stream reopens.
+						if (timer && target.id === "board-columns") {
+							mark(false);
+						}
+					});
+				})();
+				(function () {
+					// Denied and half-failed mutations still carry fragments:
+					// htmx only auto-swaps 2xx, so without this a 403 denial
+					// or a 5xx publish failure would fail silently. Parse the
+					// error body, swap the fresh card/column node in by id
+					// so the actor converges, and render the flash text into
+					// the flash home. Binding on the body (not the board
+					// root) covers viewers whose columns arrive after load.
+					function swapById(node) {
+						var id = node.getAttribute("id");
+						if (!id || id === "flash") return;
+						if (!/^card-\d+$/.test(id) && !/^column-\d+$/.test(id)) return;
+						var target = document.getElementById(id);
+						if (!target) return;
+						target.outerHTML = node.outerHTML;
+						var fresh = document.getElementById(id);
+						if (fresh && window.htmx) window.htmx.process(fresh);
+						if (fresh && window.Alpine && window.Alpine.initTree) window.Alpine.initTree(fresh);
+					}
+					document.body.addEventListener("htmx:responseError", function (event) {
+						var xhr = event.detail && event.detail.xhr;
+						if (!xhr) return;
+						var doc;
+						try {
+							doc = new DOMParser().parseFromString(xhr.responseText || "", "text/html");
+						} catch (e) {
+							return;
+						}
+						var nodes = doc.querySelectorAll("[id]");
+						for (var i = 0; i < nodes.length; i++) {
+							if (nodes[i].id !== "flash") swapById(nodes[i]);
+						}
+						var incoming = doc.getElementById("flash");
+						if (!incoming) return;
+						incoming.removeAttribute("hx-swap-oob");
+						var home = document.getElementById("flash");
+						if (home) {
+							home.replaceWith(incoming);
+						} else {
+							var main = document.querySelector("main") || document.body;
+							main.insertBefore(incoming, main.firstChild);
+						}
+					});
+				})();
+				(function () {
+					// vote-keeper: your Vote/Unvote control, kept yours.
+					// Card broadcasts carry the acting voter's button (one
+					// payload for every viewer), so a foreign vote would
+					// flip your control to theirs. The keeper owns your
+					// control state instead: the record seeds from the
+					// server-rendered shell, resyncs from your own
+					// responses (which render your state), and re-applies
+					// after every swap, so broadcasts move counts but
+					// never your control. Denials change nothing: the
+					// flash-only body swaps no card and the record stands.
+					// Binding on the body covers viewers whose columns
+					// arrive after load; lookups run at event time.
+					function columnsRoot() { return document.getElementById("board-columns") || document; }
+					function record() {
+						if (!window.__voted) {
+							window.__voted = {};
+							readInto(window.__voted, columnsRoot());
+						}
+						return window.__voted;
+					}
+					function eachCard(node, fn) {
+						if (node instanceof HTMLElement && /^card-\d+$/.test(node.id || "")) fn(node);
+						var cards = node.querySelectorAll ? node.querySelectorAll("article.card") : [];
+						for (var i = 0; i < cards.length; i++) fn(cards[i]);
+					}
+					function ownButton(article) {
+						for (var i = 0; i < article.children.length; i++) {
+							if (article.children[i].tagName === "FOOTER") {
+								return article.children[i].querySelector(".vote-button");
+							}
+						}
+						return null;
+					}
+					function cardId(article) {
+						var m = /^card-(\d+)$/.exec(article.id || "");
+						return m ? m[1] : "";
+					}
+					// readInto copies freshly rendered controls into the
+					// record: responses render your own state, so Unvote
+					// marks a vote and Vote clears one.
+					function readInto(set, node) {
+						eachCard(node, function (article) {
+							var id = cardId(article);
+							var btn = ownButton(article);
+							if (!id || !btn) return;
+							if (btn.classList.contains("vote-cast")) set[id] = true;
+							else delete set[id];
+						});
+					}
+					// apply writes the record back into controls without
+					// touching counts, authors, or anything else a
+					// broadcast carried.
+					function apply() {
+						var set = record();
+						eachCard(columnsRoot(), function (article) {
+							var id = cardId(article);
+							var btn = ownButton(article);
+							if (!id || !btn) return;
+							if (set[id]) {
+								btn.textContent = "Unvote";
+								btn.classList.add("vote-cast");
+								btn.setAttribute("hx-post", "/cards/" + id + "/unvote");
+							} else {
+								btn.textContent = "Vote";
+								btn.classList.remove("vote-cast");
+								btn.setAttribute("hx-post", "/cards/" + id + "/vote");
+							}
+						});
+					}
+					// The single swap hook above calls window.__voteApply
+					// (wired here) so the shell keeps exactly one swap
+					// hook; the listeners below cover the paths that never
+					// pass through it.
+					window.__voteApply = apply;
+					document.body.addEventListener("htmx:afterRequest", function (event) {
+						var detail = event.detail || {};
+						var status = detail.xhr ? detail.xhr.status : 0;
+						var settled = detail.successful === true ||
+							(status >= 200 && status < 300) || status >= 500;
+						if (!settled) return;
+						readInto(record(), columnsRoot());
+						apply();
+					});
+					// Full-root refreshes (reconnect resync, reveal, poll
+					// fallback) fetch server-correct columns outside htmx,
+					// so those resync the record too.
+					window.addEventListener("board-swapped", function (event) {
+						if (event.detail && event.detail.id === "board-columns") {
+							readInto(record(), columnsRoot());
+						}
+						apply();
+					});
+				})();
+				(function () {
+					// Board drag-and-drop scope factory. Exactly one scope
+					// exists per board page, on the shell above every swap
+					// target; card and column fragments below carry bindings
+					// only, so morph swaps never destroy this state. A drop
+					// issues a single PUT carrying the slot seen at drag
+					// start; the server rejects it with 409 when a remote
+					// update moved the card meanwhile. A swap landing
+					// mid-drag (announced as board-swapped by the hook
+					// above) snaps back through a column refetch instead of
+					// dropping onto stale slots. The dropPending guard keeps
+					// exactly one PUT in flight even if a swap re-attaches
+					// the drop binding mid-gesture.
+					function boardDnD() {
+						return {
+							drag: null,
+							over: null,
+							stale: false,
+							dropPending: false,
+							columnsUrl: "",
+							init: function () {
+								var root = document.getElementById("board-columns");
+								this.columnsUrl = (root && root.getAttribute("data-columns-url")) ||
+									(window.location.pathname + "?fragment=columns");
+							},
+							cardNode: function (id) { return document.getElementById("card-" + id); },
+							dragStart: function (event, id) {
+								if (this.dropPending) return;
+								var node = this.cardNode(id);
+								this.drag = {
+									id: String(id),
+									fromColumn: node ? (node.getAttribute("data-column") || "") : "",
+									fromPosition: node ? (node.getAttribute("data-position") || "") : "",
+								};
+								this.stale = false;
+								this.over = null;
+								if (event.dataTransfer) {
+									event.dataTransfer.effectAllowed = "move";
+									try { event.dataTransfer.setData("text/plain", String(id)); } catch (e) { /* synthetic drags carry no payload */ }
+								}
+							},
+							dragOver: function (event) {
+								if (!this.drag) return;
+								event.preventDefault();
+								if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+								var list = event.currentTarget;
+								var column = list.getAttribute("data-column") || "";
+								var self = this;
+								var cards = Array.prototype.filter.call(
+									list.querySelectorAll("article.card"),
+									function (c) { return c.id !== "card-" + self.drag.id; },
+								);
+								var pos = cards.length;
+								for (var i = 0; i < cards.length; i++) {
+									var rect = cards[i].getBoundingClientRect();
+									if (event.clientY < rect.top + rect.height / 2) { pos = i; break; }
+								}
+								this.over = { column: column, position: pos };
+							},
+							dragLeave: function (event) {
+								if (!this.drag) return;
+								var list = event.currentTarget;
+								if (list && event.relatedTarget && list.contains(event.relatedTarget)) return;
+								this.over = null;
+							},
+							isOver: function (column) {
+								return !!(this.drag && this.over && String(this.over.column) === String(column));
+							},
+							drop: function (event) {
+								if (!this.drag || this.dropPending) {
+									if (event && event.preventDefault) event.preventDefault();
+									return;
+								}
+								event.preventDefault();
+								var drag = this.drag;
+								var over = this.over;
+								this.drag = null;
+								this.over = null;
+								if (this.stale) {
+									this.stale = false;
+									this.refetch("Board updated while you were dragging — try again.");
+									return;
+								}
+								var list = event.currentTarget;
+								var column = list.getAttribute("data-column") || "";
+								var position = (over && String(over.column) === String(column)) ?
+									over.position : this.endPosition(list, drag.id);
+								this.dropPending = true;
+								var self = this;
+								var params = new URLSearchParams({
+									column_id: column,
+									position: String(position),
+									from_column_id: drag.fromColumn,
+									from_position: drag.fromPosition,
+								});
+								fetch("/cards/" + drag.id, {
+									method: "PUT",
+									credentials: "same-origin",
+									headers: { "Content-Type": "application/x-www-form-urlencoded" },
+									body: params.toString(),
+								}).then(function (res) {
+									// Success converges through the column
+									// broadcast; nothing to swap here. Other
+									// rejections only flash: swapping an
+									// error payload into the board would
+									// clobber it.
+									if (res.status === 409) {
+										return self.hintFrom(res, "Someone else moved cards — refreshed, try the drop again.")
+											.then(function (hint) { self.refetch(hint); });
+									}
+									if (!res.ok) {
+										self.flash("Drop failed — reload and try again.");
+									}
+									return null;
+								}).catch(function () {
+									self.refetch("Drop failed — refreshed, try again.");
+								}).then(function () {
+									self.dropPending = false;
+								});
+							},
+							dragEnd: function () {
+								this.drag = null;
+								this.over = null;
+							},
+							markStale: function () {
+								if (this.drag) this.stale = true;
+							},
+							endPosition: function (list, id) {
+								var cards = list.querySelectorAll("article.card");
+								var pos = 0;
+								for (var i = 0; i < cards.length; i++) {
+									if (cards[i].id !== "card-" + id) pos++;
+								}
+								return pos;
+							},
+							hintFrom: function (res, fallback) {
+								return res.text().then(function (text) {
+									try {
+										var doc = new DOMParser().parseFromString(text, "text/html");
+										var flash = doc.getElementById("flash");
+										if (flash && flash.textContent.trim()) return flash.textContent.trim();
+									} catch (e) { /* fall through to the default hint */ }
+									return fallback;
+								}, function () { return fallback; });
+							},
+							refetch: function (hint) {
+								// The refresh morphs the columns root, which
+								// also replaces the flash home: re-apply the
+								// hint once the morph settles, and apply it
+								// now in case no swap follows.
+								var self = this;
+								function show() { self.flash(hint); }
+								if (window.refreshColumnsRoot) {
+									window.refreshColumnsRoot(this.columnsUrl).then(show, show);
+								} else {
+									show();
+								}
+							},
+							flash: function (text) {
+								if (!text) return;
+								var home = document.getElementById("flash");
+								if (!home) return;
+								home.className = "flash-error";
+								home.textContent = text;
+							},
+						};
+					}
+					window.boardDnD = boardDnD;
+				})();
+			</script>
+		</body>
+	</html>
+}

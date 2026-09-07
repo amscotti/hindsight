@@ -1,0 +1,109 @@
+# golangci-lint v2 config (v2.13.2, built with go1.27). Keep the enabled
+# set small and warning-free; `make lint` (and CI) must pass with zero
+# issues.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Exactly this set, nothing else: v2 runs only non-default linters
+  # listed here, so a future default (like errcheck) can never fail
+  # the gate unannounced.
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+    - unparam
+    - depguard
+  settings:
+    misspell:
+      locale: US
+    staticcheck:
+      # ST1005 off: these error strings render verbatim in on-screen
+      # flash messages, where sentence punctuation is intentional UX
+      # copy (the v1 gate accepted them too).
+      checks: ["all", "-ST1005"]
+    # Layer enforcement for ARCHITECTURE.md section 2. A forbidden import
+    # fails `make lint` and CI. Root *.go (main wiring) is intentionally
+    # unconstrained; every rule below scopes to its package dir.
+    # NOTE on `files` patterns: matching is against the ABSOLUTE file
+    # path, a leading `**/` is required, and a middle/trailing `/**/`
+    # matches one or more dirs but NOT zero. So each package needs BOTH
+    # the flat form (`**/<pkg>/*.go`) and the nested form
+    # (`**/<pkg>/**/*.go`). Do not "simplify" these without re-running
+    # the probe check below.
+    # Probe check: plant `import _ "database/sql"` in handlers/,
+    # `net/http` in db/, `hindsight/db` in realtime/ — `make lint` must
+    # fail 3x.
+    depguard:
+      rules:
+        no-sql-outside-db:
+          files:
+            - '**/handlers/*.go'
+            - '**/handlers/**/*.go'
+            - '**/realtime/*.go'
+            - '**/realtime/**/*.go'
+            - '**/templates/*.go'
+            - '**/templates/**/*.go'
+          deny:
+            - pkg: database/sql
+              desc: SQL belongs in db/ only (handlers use store interfaces)
+            - pkg: modernc.org/sqlite
+              desc: sqlite driver belongs in db/ only
+        no-text-template-in-handlers:
+          files:
+            - '**/handlers/*.go'
+            - '**/handlers/**/*.go'
+          deny:
+            - pkg: text/template
+              desc: text/template forbidden in handlers/ (render via templates/ only)
+            - pkg: html/template
+              desc: html/template forbidden in handlers/ (render via templates/ only; templ.Unsafe/template.HTML forbidden per section 8)
+        db-persistence-only:
+          files:
+            - '**/db/*.go'
+            - '**/db/**/*.go'
+          deny:
+            - pkg: hindsight/handlers
+              desc: db must not depend on handlers (layer inversion)
+            - pkg: hindsight/realtime
+              desc: db must not depend on realtime (publish after commit, from handlers)
+            - pkg: hindsight/templates
+              desc: db must not depend on templates (handlers map rows to view models)
+            - pkg: net/http
+              desc: db must not serve HTTP
+        broker-persistence-free:
+          files:
+            - '**/realtime/*.go'
+            - '**/realtime/**/*.go'
+          deny:
+            - pkg: hindsight/db
+              desc: broker is persistence-free (section 5 ring buffer is in-memory)
+            - pkg: hindsight/handlers
+              desc: broker must not depend on handlers (layer inversion)
+            - pkg: hindsight/templates
+              desc: broker carries opaque HTML strings, not template components
+        templates-render-only:
+          files:
+            - '**/templates/*.go'
+            - '**/templates/**/*.go'
+          deny:
+            - pkg: hindsight/db
+              desc: templates render view models, never query the store
+            - pkg: hindsight/realtime
+              desc: templates never publish events
+            - pkg: net/http
+              desc: templates must not serve HTTP
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

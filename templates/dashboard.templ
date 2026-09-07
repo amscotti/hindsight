@@ -1,0 +1,186 @@
+package templates
+
+import (
+	"net/url"
+	"strings"
+)
+
+// Dashboard is the landing page: active and archived board lists with
+// per-board counts plus a search box that filters by name or context.
+// The status shelf (all, active, archived) narrows which list renders;
+// search and shelf combine, and each control preserves the other.
+templ Dashboard(active []BoardSummary, archived []BoardSummary, query string, status string) {
+	@Base("Hindsight — boards") {
+		<main class="container">
+			<header class="page-head">
+				<h1 class="wordmark">Hindsight</h1>
+				<p class="lede">Self-hosted team retrospectives: collect, vote, discuss, act. No accounts — share a link and retro together, live.</p>
+				<div class="cta-row">
+					<a href="/new" role="button">Start a new retro board</a>
+				</div>
+				<div class="inventory-tools">
+					<form method="GET" action="/" role="search">
+						<input
+							type="search"
+							id="board-search"
+							name="q"
+							value={ query }
+							placeholder="Search boards by name…"
+							aria-label="Search boards"
+						/>
+						if status != "all" {
+							<input type="hidden" name="status" value={ status }/>
+						}
+						<button type="submit">Search</button>
+					</form>
+					<nav aria-label="Board filter" class="filter-row">
+						@filterLink(query, status, "all", "All")
+						@filterLink(query, status, "active", "Active")
+						@filterLink(query, status, "archived", "Archived")
+					</nav>
+				</div>
+			</header>
+			<div id="board-lists">
+				if dashStatus(status) == "all" || dashStatus(status) == "active" {
+					<section aria-label="Active boards">
+						<h2>Active boards · { itoa(len(active)) }</h2>
+						if len(active) == 0 {
+							<p class="empty-list">No boards yet. <a href="/new">Start a new retro board</a> and share the link with your team.</p>
+						} else {
+							<ul class="board-list">
+								for _, summary := range active {
+									@BoardRow(summary)
+								}
+							</ul>
+						}
+					</section>
+				}
+				if dashStatus(status) == "all" || dashStatus(status) == "archived" {
+					<section aria-label="Archived boards">
+						<h2>Archived boards · { itoa(len(archived)) }</h2>
+						if len(archived) == 0 {
+							<p class="empty-list">Nothing archived. Finished boards rest here without losing content.</p>
+						} else {
+							<ul class="board-list">
+								for _, summary := range archived {
+									@BoardRow(summary)
+								}
+							</ul>
+						}
+					</section>
+				}
+			</div>
+		</main>
+	}
+}
+
+// filterLink renders one shelf option, carrying the search query
+// along. The current shelf carries the marker for assistive tech.
+templ filterLink(query string, current string, value string, label string) {
+	if current == value {
+		<a href={ dashboardURL(query, value) } aria-current="page">{ label }</a>
+	} else {
+		<a href={ dashboardURL(query, value) }>{ label }</a>
+	}
+}
+
+// dashboardURL builds a dashboard link keeping the search query and
+// the shelf together; defaults stay off the URL.
+func dashboardURL(query string, status string) string {
+	var parts []string
+	if strings.TrimSpace(query) != "" {
+		parts = append(parts, "q="+url.QueryEscape(query))
+	}
+	if status != "" && status != "all" {
+		parts = append(parts, "status="+url.QueryEscape(status))
+	}
+	if len(parts) == 0 {
+		return "/"
+	}
+	return "/?" + strings.Join(parts, "&")
+}
+
+// BoardRow is the dashboard row partial returned after archive and
+// unarchive mutations. The stable id lets htmx swap the row in place.
+templ BoardRow(summary BoardSummary) {
+	<li id={ "board-" + summary.PublicID }>
+		<article>
+			<h3><a href={ templ.SafeURL("/b/" + summary.PublicID) }>{ summary.Name }</a></h3>
+			if summary.Context != "" {
+				<p>{ summary.Context }</p>
+			}
+			<p><small>{ boardCounts(summary) }</small></p>
+			<footer class="row-actions">
+				if summary.Archived {
+					<button
+						hx-post={ "/boards/" + summary.PublicID + "/unarchive" }
+						hx-target={ "#board-" + summary.PublicID }
+						hx-swap="outerHTML"
+					>Unarchive</button>
+				} else {
+					<button
+						hx-post={ "/boards/" + summary.PublicID + "/archive" }
+						hx-target={ "#board-" + summary.PublicID }
+						hx-swap="outerHTML"
+					>Archive</button>
+				}
+				<details>
+					<summary>Duplicate</summary>
+					<form method="POST" action={ "/boards/" + summary.PublicID + "/duplicate" }>
+						<label>
+							<input type="checkbox" name="carry_actions" value="1"/>
+							Carry open actions
+						</label>
+						<button type="submit">Duplicate</button>
+					</form>
+				</details>
+			</footer>
+		</article>
+	</li>
+}
+
+func boardCounts(summary BoardSummary) string {
+	cards := "0 cards"
+	if summary.CardCount == 1 {
+		cards = "1 card"
+	} else if summary.CardCount > 1 {
+		cards = itoa(summary.CardCount) + " cards"
+	}
+	actions := "0 open actions"
+	if summary.OpenActionCount == 1 {
+		actions = "1 open action"
+	} else if summary.OpenActionCount > 1 {
+		actions = itoa(summary.OpenActionCount) + " open actions"
+	}
+	return cards + " · " + actions
+}
+
+// dashStatus normalizes the shelf value; unknown values fall back to
+// "all" so the dashboard always renders both sections.
+func dashStatus(status string) string {
+	switch status {
+	case "active", "archived":
+		return status
+	default:
+		return "all"
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	if negative {
+		digits = append([]byte{'-'}, digits...)
+	}
+	return string(digits)
+}

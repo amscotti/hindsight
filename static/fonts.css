@@ -1,0 +1,36 @@
+/* Hindsight type: three faces, all vendored (latin subsets), no CDN.
+   - Caveat: the wordmark only. Never body text, never board titles.
+   - IBM Plex Sans: UI and reading face.
+   - IBM Plex Mono: instruments — timer, counts, phase labels, meta. */
+
+@font-face {
+	font-family: "Caveat";
+	font-style: normal;
+	font-weight: 600 700;
+	font-display: swap;
+	src: url(vendor/fonts/caveat-v23-latin.woff2) format("woff2");
+}
+
+@font-face {
+	font-family: "IBM Plex Sans";
+	font-style: normal;
+	font-weight: 400 600;
+	font-display: swap;
+	src: url(vendor/fonts/ibmplexsans-v23-latin.woff2) format("woff2");
+}
+
+@font-face {
+	font-family: "IBM Plex Mono";
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url(vendor/fonts/ibmplexmono-v20-400-latin.woff2) format("woff2");
+}
+
+@font-face {
+	font-family: "IBM Plex Mono";
+	font-style: normal;
+	font-weight: 500;
+	font-display: swap;
+	src: url(vendor/fonts/ibmplexmono-v20-500-latin.woff2) format("woff2");
+}

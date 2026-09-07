@@ -1,0 +1,15 @@
+services:
+  hindsight:
+    build: .
+    image: hindsight
+    ports:
+      - "8080:8080"
+    volumes:
+      - hindsight-data:/data
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/hindsight.db
+    restart: unless-stopped
+
+volumes:
+  hindsight-data:

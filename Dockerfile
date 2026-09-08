@@ -2,7 +2,7 @@
 # package manager, no sibling files. Everything the server needs at
 # runtime (web assets, migrations, templates) is embedded in the
 # binary; the only disk touch is the SQLite file under /data.
-FROM golang:1.26.5 AS build
+FROM golang:1.27.1 AS build
 
 WORKDIR /src
 
